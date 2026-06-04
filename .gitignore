@@ -11,10 +11,8 @@ android/build/
 # Test artifacts
 test_output.txt
 test_err.txt
+test-data/
 
-# Test data: keep libapp.so + patch, exclude full APKs
-test-data/*.apk
-
-# Phase 4 screenshots (kept locally for review)
-phase4-*.png
+# Screenshots
+*.png
 ui_dump.xml

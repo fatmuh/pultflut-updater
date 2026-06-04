@@ -314,12 +314,12 @@ pub extern "C" fn shorebird_free_string(s: *mut c_char) {
 // Internal helpers
 // =============================================================================
 
-/// Find the patch with the lexicographically largest directory name.
+/// Find the patch with the largest numeric directory name.
 /// Returns the path to the **patch directory** `<patches_dir>/<max>/`
 /// if it contains either `patch.bin` (bsdiff) or `libapp.so` (full file).
 fn find_latest_patch(patches_dir: &Path) -> Option<PathBuf> {
     let entries = fs::read_dir(patches_dir).ok()?;
-    let mut best: Option<(String, PathBuf)> = None;
+    let mut best: Option<(u64, PathBuf)> = None;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -330,6 +330,14 @@ fn find_latest_patch(patches_dir: &Path) -> Option<PathBuf> {
             Some(n) => n.to_string(),
             None => continue,
         };
+        // Parse directory name as a patch number (integer).
+        let num: u64 = match name.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                debug!("Skipping {}: not a numeric patch dir", name);
+                continue;
+            }
+        };
         // A patch directory must contain either patch.bin (bsdiff)
         // or libapp.so (full file).
         let has_bsdiff = path.join("patch.bin").exists();
@@ -339,8 +347,8 @@ fn find_latest_patch(patches_dir: &Path) -> Option<PathBuf> {
             continue;
         }
         match &best {
-            Some((n, _)) if n >= &name => {}
-            _ => best = Some((name, path)),
+            Some((n, _)) if *n >= num => {}
+            _ => best = Some((num, path)),
         }
     }
 
