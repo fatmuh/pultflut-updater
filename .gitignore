@@ -1,0 +1,10 @@
+target/
+Cargo.lock
+*.so
+*.dll
+*.dylib
+.gradle/
+build/
+android/build/
+test_output.txt
+test_err.txt

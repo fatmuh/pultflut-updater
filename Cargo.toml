@@ -1,0 +1,36 @@
+[package]
+name = "pultflut-updater"
+version = "0.1.0"
+edition = "2021"
+description = "Pultflut native updater — bsdiff-based libapp.so swap for Android"
+license = "MIT"
+
+[lib]
+name = "pultflut_updater"
+crate-type = ["cdylib"]   # Compile to .so for Android JNI
+
+[dependencies]
+# bsdiff (decode side)
+qbsdiff = "1.4"
+
+# Error handling
+thiserror = "1"
+
+# Logging (Android logcat)
+android_logger = "0.14"
+log = "0.4"
+# (env_logger is dev-only; Android uses android_logger)
+
+# JNI bindings (only needed when we add JNI shim in Phase 2)
+jni = "0.21"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[dev-dependencies]
+env_logger = "0.11"
+tempfile = "3"
