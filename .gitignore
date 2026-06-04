@@ -1,3 +1,4 @@
+# Build artifacts
 target/
 Cargo.lock
 *.so
@@ -6,5 +7,14 @@ Cargo.lock
 .gradle/
 build/
 android/build/
+
+# Test artifacts
 test_output.txt
 test_err.txt
+
+# Test data: keep libapp.so + patch, exclude full APKs
+test-data/*.apk
+
+# Phase 4 screenshots (kept locally for review)
+phase4-*.png
+ui_dump.xml

@@ -193,16 +193,51 @@ pub extern "C" fn shorebird_update() -> i32 {
         .unwrap_or_else(|| "unknown".to_string());
 
     let patch_file = latest_patch.join("patch.bin");
-    info!("Found latest patch: {} (#{})", patch_file.display(), patch_number);
-
-    // Apply bsdiff
-    let base_path = libapp_dir.join("libapp.so");
+    let full_libapp = latest_patch.join("libapp.so");
     let tmp_output = latest_patch.join("libapp.so.tmp");
     let final_output = latest_patch.join("libapp.so");
 
-    if let Err(e) = apply_bsdiff(&base_path, &patch_file, &tmp_output) {
-        error!("Patch apply failed: {}", e);
-        let _ = fs::remove_file(&tmp_output);
+    info!("Found latest patch: {} (#{})", latest_patch.display(), patch_number);
+
+    // Two patch formats supported:
+    // 1. Full file: just use the file in the patch dir directly
+    // 2. bsdiff: apply patch to base libapp.so
+    if full_libapp.exists() {
+        info!("Patch #{} is a full libapp.so", patch_number);
+        match verify_elf(&full_libapp) {
+            Ok(size) => info!("Verified ELF ({} bytes)", size),
+            Err(e) => {
+                error!("Full libapp.so invalid: {}", e);
+                return 1;
+            }
+        }
+        // For full file, write to tmp then atomic rename to ensure
+        // the final file is never half-written.
+        if let Err(e) = fs::copy(&full_libapp, &tmp_output) {
+            error!("Copy to tmp failed: {}", e);
+            return 1;
+        }
+    } else if patch_file.exists() {
+        info!("Patch #{} is a bsdiff ({})", patch_number, patch_file.display());
+        let base_path = match find_libapp_base(&libapp_dir) {
+            Some(p) => p,
+            None => {
+                let err = format!(
+                    "Base libapp.so not found in: {}. On modern Android, the file may be embedded in the APK. Push a full libapp.so instead of a bsdiff patch.",
+                    libapp_dir.display()
+                );
+                error!("{}", err);
+                return 1;
+            }
+        };
+        info!("Using base: {}", base_path.display());
+        if let Err(e) = apply_bsdiff(&base_path, &patch_file, &tmp_output) {
+            error!("Patch apply failed: {}", e);
+            let _ = fs::remove_file(&tmp_output);
+            return 1;
+        }
+    } else {
+        error!("Patch dir has neither patch.bin nor libapp.so");
         return 1;
     }
 
@@ -281,7 +316,7 @@ pub extern "C" fn shorebird_free_string(s: *mut c_char) {
 
 /// Find the patch with the lexicographically largest directory name.
 /// Returns the path to the **patch directory** `<patches_dir>/<max>/`
-/// if it contains a `patch.bin` file.
+/// if it contains either `patch.bin` (bsdiff) or `libapp.so` (full file).
 fn find_latest_patch(patches_dir: &Path) -> Option<PathBuf> {
     let entries = fs::read_dir(patches_dir).ok()?;
     let mut best: Option<(String, PathBuf)> = None;
@@ -295,9 +330,12 @@ fn find_latest_patch(patches_dir: &Path) -> Option<PathBuf> {
             Some(n) => n.to_string(),
             None => continue,
         };
-        let patch_file = path.join("patch.bin");
-        if !patch_file.exists() {
-            debug!("Skipping {}: no patch.bin", name);
+        // A patch directory must contain either patch.bin (bsdiff)
+        // or libapp.so (full file).
+        let has_bsdiff = path.join("patch.bin").exists();
+        let has_full = path.join("libapp.so").exists();
+        if !has_bsdiff && !has_full {
+            debug!("Skipping {}: no patch.bin or libapp.so", name);
             continue;
         }
         match &best {
@@ -362,6 +400,70 @@ fn atomic_rename(src: &Path, dst: &Path) -> Result<(), String> {
     // On Unix (Android), rename is atomic and overwrites.
     // On Windows, std::fs::rename also overwrites since Rust 1.5+.
     fs::rename(src, dst).map_err(|e| format!("rename: {}", e))
+}
+
+/// Verify a file is a valid ELF shared library.
+fn verify_elf(path: &Path) -> Result<u64, String> {
+    let bytes = fs::read(path).map_err(|e| format!("read: {}", e))?;
+    if bytes.len() < 4 {
+        return Err("file too small".to_string());
+    }
+    // ELF magic: 0x7f 'E' 'L' 'F'
+    if bytes[0] != 0x7f || bytes[1] != b'E' || bytes[2] != b'L' || bytes[3] != b'F' {
+        return Err("not an ELF file (bad magic)".to_string());
+    }
+    Ok(bytes.len() as u64)
+}
+
+/// Find the bundled libapp.so. Tries common Android locations where
+/// the system might place extracted native libraries.
+fn find_libapp_base(libapp_dir: &Path) -> Option<PathBuf> {
+    debug!("Looking for libapp.so under: {}", libapp_dir.display());
+    // Direct
+    let direct = libapp_dir.join("libapp.so");
+    if direct.exists() {
+        return Some(direct);
+    }
+    // Scan subdirectories (arm64, arm64-v8a, etc.)
+    if let Ok(entries) = fs::read_dir(libapp_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let p = path.join("libapp.so");
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    } else {
+        warn!("Cannot read_dir {} (might be sandboxed)", libapp_dir.display());
+    }
+    // Maybe the system stripped the ABI suffix from the dir name. Try
+    // appending common ABI names to libapp_dir.
+    for abi in &["arm64-v8a", "arm64", "x86_64", "x86", "armeabi-v7a"] {
+        let p = libapp_dir.join(abi).join("libapp.so");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    // Try parent dir + ABI subdir
+    if let Some(parent) = libapp_dir.parent() {
+        for abi in &["arm64-v8a", "arm64", "x86_64", "x86", "armeabi-v7a"] {
+            let p = parent.join(abi).join("libapp.so");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    // On modern Android, the libapp.so might be in the APK itself
+    // (loaded via mmap). In that case there's no extracted file to read.
+    // We can find the APK from the package manager, but we don't have
+    // access to the package manager from the updater. Log for debugging.
+    warn!(
+        "libapp.so not found at any common location. On modern Android, \
+         the file may be embedded in the APK and not extracted to disk."
+    );
+    None
 }
 
 // =============================================================================
