@@ -31,6 +31,9 @@ use std::sync::Once;
 use log::{debug, error, info, warn};
 use qbsdiff::{Bsdiff, Bspatch};
 
+#[cfg(target_os = "android")]
+mod jni_shim;
+
 thread_local! {
     static STATE: RefCell<Option<UpdaterState>> = const { RefCell::new(None) };
 }
